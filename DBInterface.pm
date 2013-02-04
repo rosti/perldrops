@@ -3,7 +3,7 @@ package DBInterface;
 use strict;
 use warnings;
 
-use Errno qw (ENOTDIR, EIO);
+use Errno qw(ENOTDIR EIO ENOENT ENOANO);
 use File::Basename;
 use WebService::Dropbox;
 use DateTime::Format::Strptime;
@@ -27,6 +27,11 @@ sub new
 sub dropbox_to_unix_time
 {
 	my $dropbox_time = $_[0];
+
+	unless (defined $dropbox_time) {
+		return 0;
+	}
+
 	my $time_pattern = "%a, %d %b %Y %H:%M:%S %z";
 	my $strp = DateTime::Format::Strptime->new(pattern => $time_pattern);
 
@@ -37,14 +42,23 @@ sub getattr
 {
 	my ($self, $filepath) = @_;
 
-	my $block_size = 1024;
 	my $file_info = $self->{dropbox}->metadata($filepath);
+
+	unless (defined $file_info) {
+		return -ENOENT();
+	}
+
+	my $block_size = 1024;
 	my $size = $file_info->{bytes};
+	my $blocks = 1 + $size / $block_size;
 	my $file_time = dropbox_to_unix_time($file_info->{modified});
+
+	my $mode = $self->{mode};
+	$mode |= ($file_info->{is_dir} ? 0040000 : 0100000);
 
 	(0,		# device
 	 0,		# inode (ignored by FUSE)
-	 $self->{mode},	# Unix mode
+	 $mode,		# Unix mode
 	 1,		# hard links
 	 $self->{uid},	# UID
 	 $self->{gid},	# GID
@@ -54,7 +68,7 @@ sub getattr
 	 $file_time,	# mtime
 	 $file_time,	# ctime
 	 $block_size,	# block size in bytes
-	 $size / $block_size	# "blocks" on disk
+	 $blocks	# "blocks" on disk
 	);
 }
 
@@ -64,8 +78,8 @@ sub getdir
 
 	my $dir_info = $self->{dropbox}->metadata($directory);
 
-	unless ($dir_info->{is_dir}) {
-		return ('.', ENOTDIR);
+	unless (defined($dir_info) || $dir_info->{is_dir}) {
+		return ('.', ENOTDIR());
 	}
 
 	my @dir_entries = map {
@@ -80,7 +94,50 @@ sub mkdir
 {
 	my ($self, $directory, $mode) = @_;
 
-	$self->{dropbox}->create_folder($directory) or return -EIO;
+	$self->{dropbox}->create_folder($directory) or return -EIO();
+
+	return 0;
 }
 
+sub unlink
+{
+	my ($self, $path) = @_;
 
+	$self->{dropbox}->delete($path) or return -ENOENT();
+
+	return 0;
+}
+
+*rmdir = \&unlink;
+
+sub rename
+{
+	my ($self, $old_path, $new_path) = @_;
+
+	$self->{dropbox}->move($old_path, $new_path) or return -ENOENT();
+
+	return 0;
+}
+
+sub read
+{
+	my ($self, $path, $size, $offset) = @_;
+	my $block = "";
+	my $end_byte = $offset + $size - 1;
+	my $range = "bytes=$offset-$end_byte";
+
+	my $response_code = sub {
+		$block .= $_[0];
+	};
+
+	$self->{dropbox}->files($path, $response_code, {}, { range => $range}) or return -EIO();
+
+	return $block;
+}
+
+sub statfs
+{
+	return -ENOANO();
+}
+
+1;
