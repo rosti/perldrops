@@ -124,13 +124,16 @@ sub read
 	my ($self, $path, $size, $offset) = @_;
 	my $block = "";
 	my $end_byte = $offset + $size - 1;
-	my $range = "bytes=$offset-$end_byte";
 
 	my $response_code = sub {
 		$block .= $_[0];
 	};
 
-	$self->{dropbox}->files($path, $response_code, {}, { range => $range}) or return -EIO();
+	my $files_opts = {
+		headers => [ 'Range' => "bytes=$offset-$end_byte" ],
+	};
+
+	$self->{dropbox}->files($path, $response_code, {}, $files_opts) or return -EIO();
 
 	return $block;
 }
