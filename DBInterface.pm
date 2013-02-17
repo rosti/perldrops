@@ -17,6 +17,7 @@ sub new
 		uid => $args->{uid},
 		gid => $args->{gid},
 		mode => $args->{mode},
+		blocksize => 1024,
 	};
 
 	bless($object, $class);
@@ -48,7 +49,7 @@ sub getattr
 		return -ENOENT();
 	}
 
-	my $block_size = 1024;
+	my $block_size = $self->{blocksize};
 	my $size = $file_info->{bytes};
 	my $blocks = 1 + $size / $block_size;
 	my $file_time = dropbox_to_unix_time($file_info->{modified});
@@ -140,7 +141,24 @@ sub read
 
 sub statfs
 {
-	return -ENOANO();
+	my $self = $_[0];
+
+	my $account_info = $self->{dropbox}->account_info() or return -ENOANO();
+
+	my $blocksize = $self->{blocksize};
+	my $total_blocks = 1 + $account_info->{quota_info}->{quota} / $blocksize;
+	my $used_blocks = 1 + $account_info->{quota_info}->{normal} / $blocksize;
+	my $free_blocks = $total_blocks - $used_blocks;
+	my $db_uid = $account_info->{uid};
+
+	(
+	 255,		# File name len
+	 $db_uid,	# Total inode count in FS
+	 $db_uid / 2,	# Total free inodes in FS
+	 $total_blocks,	# Total blocks in FS
+	 $free_blocks,	# Total free blocks in FS
+	 $blocksize	# Block size in bytes
+	);
 }
 
 1;
